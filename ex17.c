@@ -71,13 +71,11 @@ struct Connection *Database_open(const char *filename, char mode)
 
 void Database_close(struct Connection *conn)
 {
-        rewind(conn->file);
-
-        int rc = fwrite(conn->db, sizeof(struct Database), 1, conn->file);
-        if(rc != 1) die("Failed to write database.");
-
-        rc = fflush(conn->file);
-        if(rc == -1) die("Cannot flush database.");
+        if(conn) {
+                if(conn->file) fclose(conn->file);
+                if(conn->db) free(conn->db);
+                free(conn);
+        }
 }
 
 void Database_write(struct Connection *conn)
@@ -92,7 +90,7 @@ void Database_write(struct Connection *conn)
 }
 
 void Database_create(struct Connection *conn){
-        for(int i; i < MAX_ROWS; i++) {
+        for(int i = 0; i < MAX_ROWS; i++) {
                 struct Address addr = {.id = i, .set = 0};
                 conn->db->rows[i] = addr;
         }
