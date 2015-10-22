@@ -21,11 +21,22 @@ $CLI d 3
 # Set a row with a previously used id
 $CLI s 3 fredek fredek
 
+# Can't set an existing row
+set +e
+$CLI s 3 blah blah >/dev/null
+case $? in
+        1) : ;;
+        *) echo "ohnoes $?"; exit 1;;
+esac
+set -e
+
 # Get rows
-$CLI g 1
-$CLI g 2
-$CLI g 3
+$CLI g 1 >/dev/null
+$CLI g 2 >/dev/null
+$CLI g 3 >/dev/null
 
 # List rows
-$CLI l
+$CLI l >/dev/null
+
+echo PASS
 
