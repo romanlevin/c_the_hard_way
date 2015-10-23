@@ -14,7 +14,7 @@ struct Row {
 };
 
 struct Database {
-    struct Row *rows;
+    struct Row **rows;
     int max_data;
     int max_rows;
     int current_rows;
@@ -33,8 +33,8 @@ struct FileHeader {
 
 struct RowHeader {
     int id;
-    size_t name_size;
-    size_t email_size;
+    int name_size;
+    int email_size;
 };
 
 void Database_close(struct Connection *conn);
@@ -69,8 +69,8 @@ struct Row *Row_create(int id, const char *name, const char *email, int max_data
         row = NULL;
     } else {
         // ensure that fields are null byte terminated
-        row->name[max_data - 1] = '\0';
-        row->email[max_data - 1] = '\0';
+        // row->name[max_data - 1] = '\0';
+        // row->email[max_data - 1] = '\0';
     }
     return row;
 }
@@ -84,16 +84,16 @@ void Row_serialize(struct Row *row, struct Connection *conn) {
     if (rc != 1)
         die("Failed to write row header.", conn);
 
-    rc = fwrite(&row->name, row_header.name_size, 1, conn->file);
+    rc = fputs(row->name, conn->file);
     if (rc != 1)
         die("Failed to write name to file.", conn);
 
-    rc = fwrite(&row->email, row_header.email_size, 1, conn->file);
+    rc = fputs(row->email, conn->file);
     if (rc != 1)
         die("Failed to write email to file.", conn);
 }
 
-struct Row *Row_deserialize(struct Connection *conn) {
+void Row_deserialize(struct Connection *conn) {
     struct RowHeader row_header;
 
     int rc = fread(&row_header, sizeof(struct RowHeader), 1, conn->file);
@@ -101,22 +101,53 @@ struct Row *Row_deserialize(struct Connection *conn) {
         die("Failed to load row header", conn);
 
     char *name = calloc(row_header.name_size, sizeof(char));
-    rc = fread(name, row_header.name_size, 1, conn->file);
+    char *rc_fgets = fgets(name, row_header.name_size + 1, conn->file);
+    if (!rc_fgets)
+        die("Failed to load name field", conn);
 
     char *email = calloc(row_header.email_size, sizeof(char));
-    rc = fread(email, row_header.email_size, 1, conn->file);
+    rc_fgets = fgets(email, row_header.email_size + 1, conn->file);
+    if (!rc_fgets)
+        die("Failed to load email field", conn);
 
-    struct Row *row = Row_create(row_header.id, name, email, conn->db->max_data);
-    if (!row)
+    conn->db->rows[row_header.id] = Row_create(row_header.id, name, email, conn->db->max_data);
+    if (!conn->db->rows[row_header.id])
         die("Failed to created deserialized row", conn);
-
-    return row;
 }
 
+void Database_create(struct Connection *conn, int max_data, int max_rows);
+
+
 void Database_load(struct Connection *conn) {
-    int rc = fread(conn->db, sizeof(struct Database), 1, conn->file);
+    struct FileHeader file_header;
+    int rc = fread(&file_header, sizeof(struct FileHeader), 1, conn->file);
     if (rc != 1)
-        die("Failed to load databse.", conn);
+        die("Failed to load FileHeader.", conn);
+    Database_create(conn, file_header.max_data, file_header.max_rows);
+    for (int i = 0; i < file_header.current_rows; i++) {
+        Row_deserialize(conn);
+    }
+}
+
+void Database_write(struct Connection *conn) {
+    rewind(conn->file);
+
+    struct FileHeader file_header = {
+        .max_rows = conn->db->max_rows, .max_data = conn->db->max_data, .current_rows = conn->db->current_rows};
+
+    int rc = fwrite(&file_header, sizeof(struct FileHeader), 1, conn->file);
+    if (rc != 1)
+        die("Failed to write file header.", conn);
+
+    for(int i = 0; i < file_header.max_rows; i++) {
+        if (!conn->db->rows[i])
+            continue;
+        Row_serialize(conn->db->rows[i], conn);
+    }
+
+    rc = fflush(conn->file);
+    if (rc == -1)
+        die("Cannot flush database.", conn);
 }
 
 struct Connection *Database_open(const char *filename, char mode, int max_data, int max_rows) {
@@ -128,10 +159,9 @@ struct Connection *Database_open(const char *filename, char mode, int max_data, 
     if (!conn->db)
         die("Memory error", conn);
 
-    conn->db->rows = calloc(max_rows, sizeof(conn->db->rows));
-
     if (mode == 'c') {
         conn->file = fopen(filename, "w");
+        Database_create(conn, max_data, max_rows);
     } else {
         conn->file = fopen(filename, "r+");
 
@@ -148,85 +178,67 @@ struct Connection *Database_open(const char *filename, char mode, int max_data, 
 
 void Database_close(struct Connection *conn) {
     if (conn) {
-        if (conn->file)
-            fclose(conn->file);
+        if (conn->file) {
+            int rc = fclose(conn->file);
+            if (rc)
+                printf("Failed to close file: %s\n", strerror(errno));
+        }
         if (conn->db) {
+            for (int i = 0; i < conn->db->max_rows; i++) {
+                Row_close(conn->db->rows[i]);
+            }
+            free(conn->db->rows);
             free(conn->db);
-            for (int i = 0; i < conn->db->max_rows; i++)
-                Row_close(&conn->db->rows[i]);
         }
         free(conn);
     }
 }
 
-void Database_write(struct Connection *conn) {
-    rewind(conn->file);
-
-    struct FileHeader file_header = {
-        .max_rows = conn->db->max_rows, .max_data = conn->db->max_data, .current_rows = conn->db->current_rows};
-
-    int rc = fwrite(&file_header, sizeof(struct FileHeader), 1, conn->file);
-    if (rc != 1)
-        die("Failed to write file header.", conn);
-
-    for(int i = 0; i < file_header.max_rows; i++) {
-        if (!&conn->db->rows[i])
-            continue;
-        Row_serialize(&conn->db->rows[i], conn);
-    }
-
-    rc = fflush(conn->file);
-    if (rc == -1)
-        die("Cannot flush database.", conn);
-}
-
-void Database_create(struct Connection *conn) {
-    for (int i = 0; i < MAX_ROWS; i++) {
-        struct Row row = {.id = i, .set = 0};
-        conn->db->rows[i] = row;
-    }
+void Database_create(struct Connection *conn, int max_data, int max_rows) {
+    conn->db->max_data = max_data;
+    conn->db->max_rows = max_rows;
+    conn->db->rows = calloc(max_rows, sizeof(struct Address *));
+    conn->db->current_rows = 0;
 }
 
 void Database_set(struct Connection *conn, int id, const char *name, const char *email) {
-    struct Row *row = &conn->db->rows[id];
-    if (row->set)
+    struct Row *row = conn->db->rows[id];
+    if (row)
         die("Already set, delete it first", conn);
 
-    row->set = 1;
-    // WARNING
-    char *res = strncpy(row->name, name, MAX_DATA);
-    row->name[MAX_DATA - 1] = '\0';
-    if (!res)
-        die("Name copy failed", conn);
+    row = Row_create(id, name, email, conn->db->max_data);
+    if (!row)
+        die("Cannot create row", conn);
 
-    res = strncpy(row->email, email, MAX_DATA);
-    row->email[MAX_DATA - 1] = '\0';
-    if (!res)
-        die("Email copy failed", conn);
+    conn->db->rows[id] = row;
+    conn->db->current_rows++;
 }
 
 void Database_get(struct Connection *conn, int id) {
-    struct Row *row = &conn->db->rows[id];
+    struct Row *row = conn->db->rows[id];
 
-    if (row->set) {
+    if (row) {
         Row_print(row);
     } else {
-        die("ID is not set", conn);
+        die("Row is not set", conn);
     }
 }
 
 void Database_delete(struct Connection *conn, int id) {
-    struct Row row = {.id = id, .set = 0};
-    conn->db->rows[id] = row;
+    if(conn->db->rows[id]){
+        free(conn->db->rows[id]);
+        conn->db->rows[id] = NULL;
+        conn->db->current_rows--;
+    }
 }
 
 void Database_list(struct Connection *conn) {
     struct Database *db = conn->db;
 
     for (int i = 0; i < MAX_ROWS; i++) {
-        struct Row *cur = &db->rows[i];
+        struct Row *cur = db->rows[i];
 
-        if (cur->set) {
+        if (cur) {
             Row_print(cur);
         }
     }
@@ -238,6 +250,8 @@ int main(int argc, char *argv[]) {
 
     char *filename = argv[1];
     char action = argv[2][0];
+    struct Connection *conn;
+    int id = 0;
 
     if (action == 'c') {
         int max_data = 0, max_rows = 0;
@@ -250,20 +264,21 @@ int main(int argc, char *argv[]) {
             max_rows = atoi(argv[4]);
         } else
             die("USAGE: ex <dbfile> c [max_data max_rows]", NULL);
-        struct Connection *conn = Database_open(filename, action, max_data, max_rows);
-        Database_create(conn);
+        conn = Database_open(filename, action, max_data, max_rows);
         Database_write(conn);
+    } else {
+        conn = Database_open(filename, action, 0, 0);
     }
 
-    struct Connection *conn = Database_open(filename, action, 0, 0);
-    int id = 0;
 
     if (argc > 3)
         id = atoi(argv[3]);
-    if (id >= MAX_ROWS)
+    if (id >= conn->db->max_rows)
         die("There's not that many records.", conn);
 
     switch (action) {
+    case 'c':
+        break;
     case 'g':
         if (argc != 4)
             die("Need an id to get", conn);
