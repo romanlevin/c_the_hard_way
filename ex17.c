@@ -97,13 +97,11 @@ void Row_deserialize(struct Connection *conn) {
         die("Failed to load row header", conn);
 
     char *name = calloc(row_header.name_size, sizeof(char));
-    fgets(name, row_header.name_size, conn->file);
-    if (!name)
+    if (!fgets(name, row_header.name_size, conn->file))
         die("Failed to load name field", conn);
 
     char *email = calloc(row_header.email_size, sizeof(char));
-    fgets(email, row_header.email_size, conn->file);
-    if (!email)
+    if (!fgets(email, row_header.email_size, conn->file))
         die("Failed to load email field", conn);
 
     conn->db->rows[row_header.id] = Row_create(row_header.id, name, email, conn->db->max_data);
